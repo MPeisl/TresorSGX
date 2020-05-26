@@ -7,6 +7,7 @@
 *.order
 *.ko
 *.mod.c
+*.mod
 .tmp_versions
 sealedBlob.txt
 tresorencl_tester
