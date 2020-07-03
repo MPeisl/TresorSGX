@@ -1,9 +1,24 @@
+#ifndef TRESORCOMMON_H
+#define TRESORCOMMON_H
+
+#ifdef __KERNEL__
+#include <linux/netlink.h>
+#endif //__KERNEL__
+
+#ifdef TRESOR_DAEMON
+#include <netlink/netlink.h>
+#include <netlink/socket.h>
+#include <netlink/msg.h>
+#include <netlink/genl/genl.h>
+#include <netlink/genl/ctrl.h>
+#endif //TRESOR_DAEMON
+
 /* ******************************
  *      DIRECTORIES
  * ****************************** */
 
-char *enclavefilepath = "/PATH_TO_/TresorSGX/tresorencl/Enclave/tresorencl.so"; // TODO modify me
-char *sealfilepath = "/PATH_TO_/seals/sealedBlob.txt";  // TODO modify me
+char *enclavefilepath = "/usr/src/workdir/tresorencl/Enclave/tresorencl.so"; // TODO modify me
+char *sealfilepath = "/usr/src/workdir/seals/sealedBlob.txt";  // TODO modify me
 char *setkey_pipename = "/tmp/tresorsgxsetkey";
 
 #define usermodehelper_daemon "/opt/tresorsgx/tresord"
@@ -58,28 +73,37 @@ enum aes_algorithm {
  * ****************************** */
 
 #define TRESOR_NL_FAMILY_NAME "TRESOR_NETLINK"
+#define TRESOR_NL_VERSION 2
+/*version 2 due to policy changes*/
+#define MAX_DATA_LEN 64
 
+// used as function param
 struct tresor_nl_msg {
-    unsigned int operation;
-    unsigned int text_len;
-    char text[32];
+    uint32_t operation;
+    uint32_t data_len;
+    char data[MAX_DATA_LEN];
 };
 
+// Netlink policy attributes
 enum {
-    DEMO_ATTR1_STRING = 1,
-    TRESOR_NL_ATTR1_MSG,
-    __TRESOR_NL_ATTR_MAX,
+    TRESOR_NL_A_UNSPEC,
+    TRESOR_NL_A_OP, // uint32_t
+    TRESOR_NL_A_DATA_LEN, // uint32_t
+    TRESOR_NL_A_DATA, // nul-terminated string!
+    __TRESOR_NL_A_MAX,
 };
 
-#define TRESOR_NL_ATTR_MAX (__TRESOR_NL_ATTR_MAX)
+#define TRESOR_NL_A_MAX (__TRESOR_NL_A_MAX - 1)
 
-
+// Netlink operations
 enum {
-    TRESOR_NL_CMD = 1,
+    TRESOR_NL_O_UNSPEC,
+    TRESOR_NL_O_CMD,
+    __TRESOR_NL_O_MAX,
 };
 
-#define TRESOR_NL_VERSION 1 // Tresor Netlink Interface Version Number
-
+#define TRESOR_NL_O_MAX (__TRESOR_NL_O_MAX - 1)
+ 
 // Netlink Message operation types
 enum {
     TRESOR_MSG_EXITDAEMON,
@@ -88,3 +112,24 @@ enum {
     TRESOR_MSG_ENCRYPT,
     TRESOR_MSG_DECRYPT
 };
+
+//Generic-Netlink policy
+#if defined(__KERNEL__) || defined(TRESOR_DAEMON)
+static struct nla_policy tresor_genl_policy[TRESOR_NL_A_MAX + 1] = {
+    [TRESOR_NL_A_OP] = {
+        .type = NLA_U32,
+    },
+    [TRESOR_NL_A_DATA_LEN] = {
+        .type = NLA_U32,
+    },
+    [TRESOR_NL_A_DATA] = {
+        .type = NLA_NUL_STRING,
+        #ifdef __KERNEL__
+        .len = MAX_DATA_LEN,
+        #else
+        .maxlen = MAX_DATA_LEN,
+        #endif //__KERNEL__
+    }
+};
+#endif //(__KERNEL__ || TRESOR_DAEMON)
+#endif //TRESORCOMMON_H

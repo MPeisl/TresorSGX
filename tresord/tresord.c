@@ -1,3 +1,6 @@
+#ifndef TRESOR_DAEMON
+#define TRESOR_DAEMON
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -22,15 +25,6 @@
 #include <signal.h>
 /* synchronation */
 #include <pthread.h>
-
-
-
-/* netlink */
-static struct nla_policy tresor_nl_gnl_policy[TRESOR_NL_ATTR_MAX + 1] =
-{
-  [DEMO_ATTR1_STRING] = {.type = NLA_STRING,.maxlen = 256}, // TODO: wont work when without
-  [TRESOR_NL_ATTR1_MSG] = { .type = NLA_UNSPEC,.maxlen = sizeof(struct tresor_nl_msg)},
-};
 
 // netlink socket - must be global because of usage in signal handler
 struct nl_sock * sk;
@@ -106,11 +100,13 @@ void tresor_nl_sendmsg(struct nl_sock *sk, struct tresor_nl_msg tresormsg) {
 	msg = nlmsg_alloc();
 	genlmsg_put(msg, NL_AUTO_PORT, NL_AUTO_SEQ, id, 0,  // hdrlen
 	                    0,  // flags
-	                    TRESOR_NL_CMD, // numeric command identifier
+	                    TRESOR_NL_O_CMD, // numeric command identifier
 	                    TRESOR_NL_VERSION  // interface version
 	                   );
-
-	nla_put(msg, TRESOR_NL_ATTR1_MSG, sizeof(struct tresor_nl_msg), &tresormsg);
+	// set attributes
+	nla_put_u32(msg, TRESOR_NL_A_OP, tresormsg.operation);
+	nla_put_u32(msg, TRESOR_NL_A_DATA_LEN, tresormsg.data_len);
+	nla_put_string(msg, TRESOR_NL_A_DATA, tresormsg.data);
 	//syslog(LOG_NOTICE, "%d sendNetlinkMsg: to Kernel: %d: Operation: %d, Text: %s, nlh->nlmsg_len: %d, sizeof(msg): %d, strlen(msg.text): %d, sizeof(msg.text): %d\n", sid, nlh->nlmsg_pid, msg.operation, msg.text, nlh->nlmsg_len, sizeof(msg), strlen(msg.text), sizeof(msg.text));
 
   	nl_send_auto(sk, msg);
@@ -235,7 +231,7 @@ int parseNetlinkMsg(struct tresor_nl_msg msg) {
 		case TRESOR_MSG_REGISTER:
 			// Register ACK from kernel to Daemon, just for information
 			syslog(LOG_NOTICE, "%d parseNetlinkMsg: TRESOR_MSG_REGISTER..", sid);
-			syslog(LOG_NOTICE, "%d parseNetlinkMsg: Register ACK from Kernel op: %d text: %s", sid, msg.operation, msg.text);
+			syslog(LOG_NOTICE, "%d parseNetlinkMsg: Register ACK from Kernel op: %d text: %s", sid, msg.operation, msg.data);
 			break;
 		case TRESOR_MSG_EXITDAEMON:
 			// Exit on this message, currently not implemented
@@ -246,16 +242,16 @@ int parseNetlinkMsg(struct tresor_nl_msg msg) {
 			mon_setkey++;
 			mon_setkey_fails++;
 			syslog(LOG_NOTICE, "%d parseNetlinkMsg: TRESOR_MSG_SAVEKEY..", sid);
-			printCharAsHex(msg.text,msg.text_len); 	// for finding the key in memory
-
+			printCharAsHex(msg.data, msg.data_len); 	// for finding the key in memory
+			//! potential nullbyte error
 			if (SETKEY_BYPIPE == 0) {
 			  	if (SEALED_CRYPTO == 1) {
-				  	initSealedCrypto(eid, msg.text, msg.text_len, sealfilepath);
+				  	initSealedCrypto(eid, msg.data, msg.data_len - 1, sealfilepath);
 			  	} else {
-					initCrypto(eid, msg.text, msg.text_len);
+					initCrypto(eid, msg.data, msg.data_len - 1);
 			  	}
 			  	syslog(LOG_NOTICE, "%d parseNetlinkMsg: TRESOR_MSG_SAVEKEY clear msg.text", sid);
-		  		memset(msg.text, 0, msg.text_len); // clear msg text
+		  		memset(msg.data, 0, msg.data_len); // clear msg text
 			}
 		  	
 		  	syslog(LOG_NOTICE, "%d parseNetlinkMsg: TRESOR_MSG_SAVEKEY end.", sid);
@@ -266,8 +262,12 @@ int parseNetlinkMsg(struct tresor_nl_msg msg) {
 			mon_encrypt_fails++;
 
 			msg_return.operation = msg.operation;
-			msg_return.text_len = msg.text_len;
-			ret = enclEncrypt (eid, msg.text, msg.text_len, msg_return.text, msg_return.text_len); 
+			msg_return.data_len = msg.data_len;
+			syslog(LOG_NOTICE, "%d encrypt data...", sid);
+			printCharAsHex(msg.data, msg.data_len);
+			ret = enclEncrypt (eid, msg.data, msg.data_len - 1, msg_return.data, msg_return.data_len - 1);
+			msg_return.data[msg_return.data_len - 1] = '\0';
+			printCharAsHex(msg_return.data, msg_return.data_len);
 			if ( TRESOR_OK != ret )
 				syslog(LOG_ERR, "Error calling enclave\n (error 0x%x)\n", ret );
 			tresor_nl_sendmsg(sk, msg_return);
@@ -279,8 +279,10 @@ int parseNetlinkMsg(struct tresor_nl_msg msg) {
 			mon_decrypt_fails++;
 
     		msg_return.operation = msg.operation;
-			msg_return.text_len = msg.text_len; // because simple block crypto
-			ret = enclDecrypt (eid, msg.text, msg.text_len, msg_return.text, msg_return.text_len);			
+			msg_return.data_len = msg.data_len; // because simple block crypto
+			syslog(LOG_NOTICE, "%d decrypt data...", sid);
+			ret = enclDecrypt (eid, msg.data, msg.data_len - 1, msg_return.data, msg_return.data_len - 1);	
+			msg_return.data[msg_return.data_len - 1] = '\0';		
 			if ( SGX_SUCCESS != ret )
 				syslog(LOG_ERR, "Error calling enclave\n (error 0x%x)\n", ret );	
 			tresor_nl_sendmsg(sk, msg_return);
@@ -288,7 +290,7 @@ int parseNetlinkMsg(struct tresor_nl_msg msg) {
 			mon_decrypt_fails--;
 			break;
 		default:
-    		syslog(LOG_NOTICE, "%d parseNetlinkMsg: ignore operation: %d text: %s", sid, msg.operation, msg.text);
+    		syslog(LOG_NOTICE, "%d parseNetlinkMsg: ignore operation: %d text: %s", sid, msg.operation, msg.data);
 			break;
 	}
     return ret;
@@ -337,20 +339,23 @@ static int tresor_nl_callback_handler(struct nl_msg * msg, void * arg)
 			* (int *) arg = TRESOR_DAEMON_EXIT;
 		}	
 	} else {
-		int valid = genlmsg_validate(hdr, 0, TRESOR_NL_ATTR_MAX, tresor_nl_gnl_policy);
-		//syslog(LOG_NOTICE, "tresor_nl_callback_handler: valid %d %s\n", valid, valid ? "ERROR" : "OK");
-		struct nlattr * attrs[TRESOR_NL_ATTR_MAX + 1];
-		if (genlmsg_parse(hdr, 0, attrs, TRESOR_NL_ATTR_MAX, tresor_nl_gnl_policy) < 0)
+		int valid = genlmsg_validate(hdr, 0, TRESOR_NL_A_MAX, tresor_genl_policy);
+		syslog(LOG_NOTICE, "tresor_nl_callback_handler: valid %d %s\n", valid, valid ? "ERROR" : "OK");
+		struct nlattr * attrs[TRESOR_NL_A_MAX + 1];
+		if (genlmsg_parse(hdr, 0, attrs, TRESOR_NL_A_MAX, tresor_genl_policy) < 0)
 		{
 			syslog(LOG_NOTICE, "%d tresor_nl_callback_handler: genlsmg_parse ERROR\n", sid);
 		}
 		else
 		{
 			//syslog(LOG_NOTICE, "%d tresor_nl_callback_handler: genlsmg_parse OK\n", sid);
-			struct tresor_nl_msg * tresormsg = (struct tresor_nl_msg *) nla_data(attrs[TRESOR_NL_ATTR1_MSG]);
+			struct tresor_nl_msg tresormsg;
+			tresormsg.operation = nla_get_u32(attrs[TRESOR_NL_A_OP]);
+			tresormsg.data_len = nla_get_u32(attrs[TRESOR_NL_A_DATA_LEN]);
+			memcpy(tresormsg.data, nla_data(attrs[TRESOR_NL_A_DATA]), tresormsg.data_len);
 			//syslog(LOG_NOTICE, "%d tresor_nl_callback_handler: tresormsg: operation: %d text_len: %s\n", sid, tresormsg->operation, tresormsg->text_len);
 			// parse incoming message
-			* (int *) arg = parseNetlinkMsg(*tresormsg);
+			* (int *) arg = parseNetlinkMsg(tresormsg);
 		}
   	}
   	mon_nl_cb_fails--;
@@ -523,7 +528,8 @@ int main(void) {
 	syslog(LOG_NOTICE, "%d main: Register tresord via netlink at tresorlkm", sid);
   	struct tresor_nl_msg tresor_register_msg;
   	tresor_register_msg.operation = TRESOR_MSG_REGISTER;
-  	strncpy(tresor_register_msg.text,"Hello Tresord here!",sizeof("Hello Tresord here!"));
+	tresor_register_msg.data_len = sizeof("Hello Tresord here!");
+	memcpy(tresor_register_msg.data, "Hello Tresord here!", tresor_register_msg.data_len);
   	// send to kernel
   	tresor_nl_sendmsg(sk, tresor_register_msg);
 
@@ -539,3 +545,6 @@ int main(void) {
 	syslog(LOG_NOTICE, "%d main: exit.", sid);
 	exit(EXIT_SUCCESS);
 }
+
+
+#endif //TRESOR_DAEMON
